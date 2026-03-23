@@ -75,14 +75,16 @@ tt.func @hoist_load_with_mask(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<10
 
 // -----
 
-tt.func @cannot_hoist_with_print_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>) {
+tt.func @hoist_load_with_print_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>) {
   %cst = arith.constant dense<0.000000e+00> : tensor<1024xf32>
   %c1_i32 = arith.constant 1 : i32
-  // CHECK-NOT: tt.load
-  // CHECK: scf.for
+  // tt.print has MemWrite effect but no pointer operand, so it does not
+  // alias with the load. The load can be hoisted.
+  // CHECK-LABEL: hoist_load_with_print_in_loop
   // CHECK: tt.load
   // CHECK: arith.addf
-  // CHECK: arith.addf
+  // CHECK: scf.for
+  // CHECK-NOT: tt.load
   %0 = arith.cmpi slt, %arg1, %arg2 : tensor<1024xi32>
   %1 = scf.for %arg7 = %arg3 to %arg4 step %c1_i32 iter_args(%arg6 = %cst) -> (tensor<1024xf32>)  : i32 {
     %2 = tt.load %arg0, %0 : tensor<1024x!tt.ptr<f32>>
@@ -97,14 +99,16 @@ tt.func @cannot_hoist_with_print_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1
 
 // -----
 
-tt.func @cannot_hoist_with_assert_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>) {
+tt.func @hoist_load_with_assert_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>) {
   %cst = arith.constant dense<0.000000e+00> : tensor<1024xf32>
   %c1_i32 = arith.constant 1 : i32
-  // CHECK-NOT: tt.load
-  // CHECK: scf.for
+  // tt.assert has MemWrite effect but no pointer operand, so it does not
+  // alias with the load. The load can be hoisted.
+  // CHECK-LABEL: hoist_load_with_assert_in_loop
   // CHECK: tt.load
   // CHECK: arith.addf
-  // CHECK: arith.addf
+  // CHECK: scf.for
+  // CHECK-NOT: tt.load
   %0 = arith.cmpi slt, %arg1, %arg2 : tensor<1024xi32>
   %cmp = arith.cmpi sge, %arg4, %arg3 : i32
   %1 = scf.for %arg7 = %arg3 to %arg4 step %c1_i32 iter_args(%arg6 = %cst) -> (tensor<1024xf32>)  : i32 {
@@ -120,9 +124,36 @@ tt.func @cannot_hoist_with_assert_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg
 
 // -----
 
-tt.func @cannot_hoist_with_store_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>, %tmp: tensor<1024x!tt.ptr<f32>>) {
+tt.func @hoist_load_with_non_aliasing_store_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>, %tmp: tensor<1024x!tt.ptr<f32>>) {
   %cst = arith.constant dense<0.000000e+00> : tensor<1024xf32>
   %c1_i32 = arith.constant 1 : i32
+  // Load from %arg0 and store to %tmp are different function arguments,
+  // so the load can be hoisted.
+  // CHECK-LABEL: hoist_load_with_non_aliasing_store_in_loop
+  // CHECK: tt.load
+  // CHECK: arith.addf
+  // CHECK: scf.for
+  // CHECK-NOT: tt.load
+  %0 = arith.cmpi slt, %arg1, %arg2 : tensor<1024xi32>
+  %1 = scf.for %arg7 = %arg3 to %arg4 step %c1_i32 iter_args(%arg6 = %cst) -> (tensor<1024xf32>)  : i32 {
+    %2 = tt.load %arg0, %0 : tensor<1024x!tt.ptr<f32>>
+    %3 = arith.addf %2, %2 : tensor<1024xf32>
+    %4 = arith.addf %arg6, %3 : tensor<1024xf32>
+    tt.store %tmp, %4, %0 : tensor<1024x!tt.ptr<f32>>
+    scf.yield %4 : tensor<1024xf32>
+  }
+  tt.store %arg5, %1, %0 : tensor<1024x!tt.ptr<f32>>
+  tt.return
+}
+
+// -----
+
+tt.func @cannot_hoist_with_aliasing_store_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1: tensor<1024xi32>, %arg2: tensor<1024xi32>, %arg3: i32, %arg4 : i32, %arg5: tensor<1024x!tt.ptr<f32>>) {
+  %cst = arith.constant dense<0.000000e+00> : tensor<1024xf32>
+  %c1_i32 = arith.constant 1 : i32
+  // Load from %arg0 and store to %arg0 use the SAME base pointer,
+  // so the load cannot be hoisted.
+  // CHECK-LABEL: cannot_hoist_with_aliasing_store_in_loop
   // CHECK-NOT: tt.load
   // CHECK: scf.for
   // CHECK: tt.load
@@ -133,7 +164,7 @@ tt.func @cannot_hoist_with_store_in_loop(%arg0: tensor<1024x!tt.ptr<f32>>, %arg1
     %2 = tt.load %arg0, %0 : tensor<1024x!tt.ptr<f32>>
     %3 = arith.addf %2, %2 : tensor<1024xf32>
     %4 = arith.addf %arg6, %3 : tensor<1024xf32>
-    tt.store %tmp, %4, %0 : tensor<1024x!tt.ptr<f32>>
+    tt.store %arg0, %4, %0 : tensor<1024x!tt.ptr<f32>>
     scf.yield %4 : tensor<1024xf32>
   }
   tt.store %arg5, %1, %0 : tensor<1024x!tt.ptr<f32>>
