@@ -11,8 +11,10 @@ Baseline (before Approach B, VectorCombine only):
 """
 
 import re
+from functools import lru_cache
 from pathlib import Path
 
+import pytest
 import triton
 from triton.backends.compiler import GPUTarget
 
@@ -21,6 +23,7 @@ GFX1250_TARGET = GPUTarget("hip", "gfx1250", 32)
 TTIR_PATH = str(Path(__file__).parent / "attn_fwd.ttir")
 
 
+@lru_cache(maxsize=None)
 def compile_for_target(target):
     return triton.compile(TTIR_PATH, target=target)
 
@@ -52,10 +55,14 @@ def count_asm_instructions(func_body):
     }
 
 
-def test_gfx1250_packed_f32_in_llir():
+@pytest.fixture(scope="module")
+def gfx1250_kernel():
+    return compile_for_target(GFX1250_TARGET)
+
+
+def test_gfx1250_packed_f32_in_llir(gfx1250_kernel):
     """GFX1250 should produce packed <2 x float> fmul/fsub in LLVM IR."""
-    kernel = compile_for_target(GFX1250_TARGET)
-    llir = kernel.asm["llir"]
+    llir = gfx1250_kernel.asm["llir"]
     func_body = get_func_body_llir(llir)
 
     packed_fop = re.compile(r"f(mul|sub|add) <2 x float>")
@@ -72,10 +79,9 @@ def test_gfx1250_packed_f32_in_llir():
     )
 
 
-def test_gfx1250_v_pk_fma_f32_in_asm():
+def test_gfx1250_v_pk_fma_f32_in_asm(gfx1250_kernel):
     """GFX1250 ASM should contain v_pk_fma_f32 from ISel contraction."""
-    kernel = compile_for_target(GFX1250_TARGET)
-    amdgcn = kernel.asm["amdgcn"]
+    amdgcn = gfx1250_kernel.asm["amdgcn"]
     func_body = get_func_body_asm(amdgcn)
     counts = count_asm_instructions(func_body)
 

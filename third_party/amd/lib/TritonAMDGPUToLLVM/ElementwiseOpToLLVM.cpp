@@ -2109,13 +2109,7 @@ Value EmitDualBF16ElementwiseOp(Location loc,
 }
 
 // Pack 2 adjacent f32 elements into <2 x float> for v_pk_* instructions.
-// Returns {result[0], result[1]} if packing is possible, empty vector otherwise.
 // Only used on GFX1250 where packed f32 math is beneficial.
-//
-// For elementwise ops, we unconditionally pack adjacent element pairs without
-// checking register contiguity. The register allocator handles VGPR pairing
-// regardless of tensor layout. VectorCombine in optimize_module already does
-// the same kind of packing for LLVM IR ops, and ISel + RA handle it correctly.
 template <typename LLVMOp>
 SmallVector<Value> EmitPackedF32Op(Location loc,
                                    ConversionPatternRewriter &rewriter,
@@ -2124,21 +2118,10 @@ SmallVector<Value> EmitPackedF32Op(Location loc,
   if (operands.size() < 2 || !elemTy.isF32())
     return {};
 
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  auto vecTy = vec_ty(elemTy, 2);
-  // Pack operand A: {operands[0][0], operands[1][0]}
-  Value va = b.undef(vecTy);
-  va = b.insert_element(vecTy, va, operands[0][0], b.i32_val(0));
-  va = b.insert_element(vecTy, va, operands[1][0], b.i32_val(1));
-  // Pack operand B: {operands[0][1], operands[1][1]}
-  Value vb = b.undef(vecTy);
-  vb = b.insert_element(vecTy, vb, operands[0][1], b.i32_val(0));
-  vb = b.insert_element(vecTy, vb, operands[1][1], b.i32_val(1));
-  // Packed operation
-  Value vr = LLVMOp::create(rewriter, loc, vecTy, va, vb);
-  // Extract back to scalars
-  return {b.extract_element(elemTy, vr, b.i32_val(0)),
-          b.extract_element(elemTy, vr, b.i32_val(1))};
+  Value va = packLLVector(loc, {operands[0][0], operands[1][0]}, rewriter);
+  Value vb = packLLVector(loc, {operands[0][1], operands[1][1]}, rewriter);
+  Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb);
+  return unpackLLVector(loc, vr, rewriter);
 }
 
 struct FDivOpConversion
