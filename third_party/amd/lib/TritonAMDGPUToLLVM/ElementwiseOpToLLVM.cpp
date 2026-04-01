@@ -2108,6 +2108,39 @@ Value EmitDualBF16ElementwiseOp(Location loc,
   return convertFp32ToBf16(loc, rewriter, result, RoundingMode::RTNE);
 }
 
+// Pack 2 adjacent f32 elements into <2 x float> for v_pk_* instructions.
+// Returns {result[0], result[1]} if packing is possible, empty vector otherwise.
+// Only used on GFX1250 where packed f32 math is beneficial.
+//
+// For elementwise ops, we unconditionally pack adjacent element pairs without
+// checking register contiguity. The register allocator handles VGPR pairing
+// regardless of tensor layout. VectorCombine in optimize_module already does
+// the same kind of packing for LLVM IR ops, and ISel + RA handle it correctly.
+template <typename LLVMOp>
+SmallVector<Value> EmitPackedF32Op(Location loc,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy,
+                                   MultipleOperandsRange operands) {
+  if (operands.size() < 2 || !elemTy.isF32())
+    return {};
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto vecTy = vec_ty(elemTy, 2);
+  // Pack operand A: {operands[0][0], operands[1][0]}
+  Value va = b.undef(vecTy);
+  va = b.insert_element(vecTy, va, operands[0][0], b.i32_val(0));
+  va = b.insert_element(vecTy, va, operands[1][0], b.i32_val(1));
+  // Pack operand B: {operands[0][1], operands[1][1]}
+  Value vb = b.undef(vecTy);
+  vb = b.insert_element(vecTy, vb, operands[0][1], b.i32_val(0));
+  vb = b.insert_element(vecTy, vb, operands[1][1], b.i32_val(1));
+  // Packed operation
+  Value vr = LLVMOp::create(rewriter, loc, vecTy, va, vb);
+  // Extract back to scalars
+  return {b.extract_element(elemTy, vr, b.i32_val(0)),
+          b.extract_element(elemTy, vr, b.i32_val(1))};
+}
+
 struct FDivOpConversion
     : ElementwiseOpConversionBase<arith::DivFOp, FDivOpConversion> {
   using ElementwiseOpConversionBase::ElementwiseOpConversionBase;
@@ -2156,6 +2189,12 @@ struct FMulOpConversion
             EmitDualBF16ElementwiseOp<LLVM::FMulOp>(loc, rewriter, operands)};
       }
     } else {
+      if (isaFamily == AMD::ISAFamily::GFX1250) {
+        auto packed =
+            EmitPackedF32Op<LLVM::FMulOp>(loc, rewriter, elemTy, operands);
+        if (!packed.empty())
+          return packed;
+      }
       return {LLVM::FMulOp::create(rewriter, loc, elemTy, operands[0][0],
                                    operands[0][1])};
     }
@@ -2167,7 +2206,13 @@ private:
 
 struct FAddOpConversion
     : ElementwiseOpConversionBase<arith::AddFOp, FAddOpConversion> {
-  using ElementwiseOpConversionBase::ElementwiseOpConversionBase;
+
+  explicit FAddOpConversion(LLVMTypeConverter &typeConverter,
+                            ModuleAxisInfoAnalysis &axisAnalysisPass,
+                            AMD::ISAFamily isaFamily,
+                            PatternBenefit benefit = patternBenefitDefault)
+      : ElementwiseOpConversionBase(typeConverter, axisAnalysisPass, benefit),
+        isaFamily(isaFamily) {}
 
   SmallVector<Value> createDestOps(arith::AddFOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter,
@@ -2178,15 +2223,30 @@ struct FAddOpConversion
     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
       return {EmitDualBF16ElementwiseOp<LLVM::FAddOp>(loc, rewriter, operands)};
     } else {
+      if (isaFamily == AMD::ISAFamily::GFX1250) {
+        auto packed =
+            EmitPackedF32Op<LLVM::FAddOp>(loc, rewriter, elemTy, operands);
+        if (!packed.empty())
+          return packed;
+      }
       return {LLVM::FAddOp::create(rewriter, loc, elemTy, operands[0][0],
                                    operands[0][1])};
     }
   }
+
+private:
+  AMD::ISAFamily isaFamily;
 };
 
 struct FSubOpConversion
     : ElementwiseOpConversionBase<arith::SubFOp, FSubOpConversion> {
-  using ElementwiseOpConversionBase::ElementwiseOpConversionBase;
+
+  explicit FSubOpConversion(LLVMTypeConverter &typeConverter,
+                            ModuleAxisInfoAnalysis &axisAnalysisPass,
+                            AMD::ISAFamily isaFamily,
+                            PatternBenefit benefit = patternBenefitDefault)
+      : ElementwiseOpConversionBase(typeConverter, axisAnalysisPass, benefit),
+        isaFamily(isaFamily) {}
 
   SmallVector<Value> createDestOps(arith::SubFOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter,
@@ -2197,10 +2257,19 @@ struct FSubOpConversion
     if (lhsElemTy.isBF16() && rhsElemTy.isBF16()) {
       return {EmitDualBF16ElementwiseOp<LLVM::FSubOp>(loc, rewriter, operands)};
     } else {
+      if (isaFamily == AMD::ISAFamily::GFX1250) {
+        auto packed =
+            EmitPackedF32Op<LLVM::FSubOp>(loc, rewriter, elemTy, operands);
+        if (!packed.empty())
+          return packed;
+      }
       return {LLVM::FSubOp::create(rewriter, loc, elemTy, operands[0][0],
                                    operands[0][1])};
     }
   }
+
+private:
+  AMD::ISAFamily isaFamily;
 };
 
 static SmallVector<Value> S8_to_Bf16(Location loc,
@@ -2560,8 +2629,10 @@ void populateElementwiseOpToLLVMPatterns(
       typeConverter, axisInfoAnalysis, benefit);
 
   patterns.add<FDivOpConversion>(typeConverter, axisInfoAnalysis, benefit);
-  patterns.add<FSubOpConversion>(typeConverter, axisInfoAnalysis, benefit);
-  patterns.add<FAddOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+  patterns.add<FSubOpConversion>(typeConverter, axisInfoAnalysis,
+                                 targetInfo.getISAFamily(), benefit);
+  patterns.add<FAddOpConversion>(typeConverter, axisInfoAnalysis,
+                                 targetInfo.getISAFamily(), benefit);
   patterns.add<FMulOpConversion>(typeConverter, axisInfoAnalysis,
                                  targetInfo.getISAFamily(), benefit);
 
