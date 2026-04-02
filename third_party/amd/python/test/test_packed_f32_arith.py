@@ -18,7 +18,6 @@ import pytest
 import triton
 from triton.backends.compiler import GPUTarget
 
-
 GFX1250_TARGET = GPUTarget("hip", "gfx1250", 32)
 TTIR_PATH = str(Path(__file__).parent / "attn_fwd.ttir")
 
@@ -66,17 +65,11 @@ def test_gfx1250_packed_f32_in_llir(gfx1250_kernel):
     func_body = get_func_body_llir(llir)
 
     packed_fop = re.compile(r"f(mul|sub|add) <2 x float>")
-    assert packed_fop.search(func_body), (
-        "Expected packed <2 x float> fmul/fsub/fadd in LLVM IR for gfx1250"
-    )
+    assert packed_fop.search(func_body), ("Expected packed <2 x float> fmul/fsub/fadd in LLVM IR for gfx1250")
 
     # Both fmul and fsub must exist for ISel FMA contraction
-    assert re.search(r"fmul.*<2 x float>", func_body), (
-        "Expected packed fmul <2 x float> in LLVM IR"
-    )
-    assert re.search(r"fsub.*<2 x float>", func_body), (
-        "Expected packed fsub <2 x float> in LLVM IR"
-    )
+    assert re.search(r"fmul.*<2 x float>", func_body), ("Expected packed fmul <2 x float> in LLVM IR")
+    assert re.search(r"fsub.*<2 x float>", func_body), ("Expected packed fsub <2 x float> in LLVM IR")
 
 
 def test_gfx1250_v_pk_fma_f32_in_asm(gfx1250_kernel):
@@ -85,20 +78,14 @@ def test_gfx1250_v_pk_fma_f32_in_asm(gfx1250_kernel):
     func_body = get_func_body_asm(amdgcn)
     counts = count_asm_instructions(func_body)
 
-    assert counts["v_pk_fma_f32"] > 0, (
-        "Expected v_pk_fma_f32 in gfx1250 asm output"
-    )
+    assert counts["v_pk_fma_f32"] > 0, ("Expected v_pk_fma_f32 in gfx1250 asm output")
 
     # After Approach B, expect significantly more packed FMAs than baseline (2)
     # and fewer scalar FMAs than baseline (260)
-    assert counts["v_pk_fma_f32"] > 2, (
-        f"Expected more than 2 v_pk_fma_f32 (got {counts['v_pk_fma_f32']}). "
-        f"Approach B should generate packed f32 ops from conversion layer."
-    )
-    assert counts["v_fma_f32"] < 260, (
-        f"Expected fewer than 260 v_fma_f32 (got {counts['v_fma_f32']}). "
-        f"Approach B packed conversion should reduce scalar FMA count."
-    )
+    assert counts["v_pk_fma_f32"] > 2, (f"Expected more than 2 v_pk_fma_f32 (got {counts['v_pk_fma_f32']}). "
+                                        f"Approach B should generate packed f32 ops from conversion layer.")
+    assert counts["v_fma_f32"] < 260, (f"Expected fewer than 260 v_fma_f32 (got {counts['v_fma_f32']}). "
+                                       f"Approach B packed conversion should reduce scalar FMA count.")
 
 
 if __name__ == "__main__":
