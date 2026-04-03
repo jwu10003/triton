@@ -4,10 +4,7 @@ Compile-only test — no gfx1250 hardware required.
 Compiles attn_fwd.ttir for gfx1250 and checks that:
   - LLVM IR contains <2 x float> fmul/fsub/fadd (from packed conversion + VectorCombine)
   - ASM contains v_pk_fma_f32 (from ISel contraction of packed fmul+fsub)
-  - Scalar v_fma_f32 count is reduced compared to baseline without packed conversion
-
-Baseline (before Approach B, VectorCombine only):
-  v_pk_fma_f32: 2, v_pk_mul_f32: 392, v_pk_add_f32: 130, v_fma_f32: 260
+  - Packed FMA lowering clearly dominates scalar FMA lowering in the resulting ASM
 """
 
 import re
@@ -78,37 +75,7 @@ def test_gfx1250_v_pk_fma_f32_in_asm(gfx1250_kernel):
     func_body = get_func_body_asm(amdgcn)
     counts = count_asm_instructions(func_body)
 
-    assert counts["v_pk_fma_f32"] > 0, ("Expected v_pk_fma_f32 in gfx1250 asm output")
-
-    # After Approach B, expect significantly more packed FMAs than baseline (2)
-    # and fewer scalar FMAs than baseline (260)
-    assert counts["v_pk_fma_f32"] > 2, (f"Expected more than 2 v_pk_fma_f32 (got {counts['v_pk_fma_f32']}). "
-                                        f"Approach B should generate packed f32 ops from conversion layer.")
-    assert counts["v_fma_f32"] < 260, (f"Expected fewer than 260 v_fma_f32 (got {counts['v_fma_f32']}). "
-                                       f"Approach B packed conversion should reduce scalar FMA count.")
-
-
-if __name__ == "__main__":
-    print("Compiling attn_fwd.ttir for gfx1250...")
-    kernel = compile_for_target(GFX1250_TARGET)
-
-    print("\n=== LLVM IR check ===")
-    llir = kernel.asm["llir"]
-    func_body = get_func_body_llir(llir)
-    packed_fop = re.compile(r"f(mul|sub|add) <2 x float>")
-    matches = packed_fop.findall(func_body)
-    print(f"Packed f32 ops found: {len(matches)}")
-
-    for line in func_body.split("\n"):
-        if packed_fop.search(line):
-            print(f"  {line.strip()}")
-            break  # just show first match
-
-    print("\n=== ASM check ===")
-    amdgcn = kernel.asm["amdgcn"]
-    func_body_asm = get_func_body_asm(amdgcn)
-    counts = count_asm_instructions(func_body_asm)
-    for name, count in counts.items():
-        print(f"{name}: {count}")
-
-    print(f"\nResult: {'PASS' if counts['v_pk_fma_f32'] > 2 else 'BASELINE (Approach B not yet active)'}")
+    assert counts["v_pk_fma_f32"] > 100, (f"Expected a substantial number of v_pk_fma_f32 instructions, got "
+                                          f"{counts['v_pk_fma_f32']}")
+    assert counts["v_fma_f32"] < 20, (f"Expected scalar v_fma_f32 instructions to stay low, got "
+                                      f"{counts['v_fma_f32']}")

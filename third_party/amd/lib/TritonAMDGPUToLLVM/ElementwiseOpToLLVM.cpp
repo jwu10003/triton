@@ -2108,23 +2108,8 @@ Value EmitDualBF16ElementwiseOp(Location loc,
   return convertFp32ToBf16(loc, rewriter, result, RoundingMode::RTNE);
 }
 
-// Pack 2 adjacent f32 elements into <2 x float> for v_pk_* instructions.
-// Only used on GFX1250 where packed f32 math is beneficial.
-template <typename LLVMOp>
-SmallVector<Value>
-EmitPackedF32Op(Location loc, ConversionPatternRewriter &rewriter, Type elemTy,
-                MultipleOperandsRange operands) {
-  if (operands.size() < 2 || !elemTy.isF32())
-    return {};
-
-  Value va = packLLVector(loc, {operands[0][0], operands[1][0]}, rewriter);
-  Value vb = packLLVector(loc, {operands[0][1], operands[1][1]}, rewriter);
-  Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb);
-  return unpackLLVector(loc, vr, rewriter);
-}
-
-// gfx1250-specific override that packs adjacent f32 elementwise ops into
-// <2 x float>. The default elementwise patterns remain target-agnostic.
+// Override pattern that packs adjacent f32 elementwise ops into <2 x float>.
+// The default elementwise patterns remain target-agnostic.
 template <typename SourceOp, typename LLVMOp>
 struct PackedF32ArithOpConversion
     : ElementwiseOpConversionBase<
@@ -2140,7 +2125,13 @@ struct PackedF32ArithOpConversion
                                    ConversionPatternRewriter &rewriter,
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
-    return EmitPackedF32Op<LLVMOp>(loc, rewriter, elemTy, operands);
+    if (operands.size() < 2 || !elemTy.isF32())
+      return {};
+
+    Value va = packLLVector(loc, {operands[0][0], operands[1][0]}, rewriter);
+    Value vb = packLLVector(loc, {operands[0][1], operands[1][1]}, rewriter);
+    Value vr = LLVMOp::create(rewriter, loc, va.getType(), va, vb);
+    return unpackLLVector(loc, vr, rewriter);
   }
 };
 
